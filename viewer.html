@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>掩模对抗 · 回放</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#eff1ed;color:#192624;font:16px system-ui,sans-serif}main{max-width:1080px;margin:auto;padding:22px}header{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap}h1{font-size:25px;margin:0 0 14px}header span,small{color:#53615c}article{display:grid;grid-template-columns:minmax(280px,1.65fr) minmax(236px,1fr);gap:20px}#map{display:block;width:100%;background:#fbfcf7;border:1px solid #9ba69e}aside{display:flex;flex-direction:column;gap:12px}section,fieldset{border:1px solid #c4ccc3;background:#fff;padding:14px;border-radius:8px}h2{margin:0 0 7px;font-size:16px}b.big{font-size:30px;display:block}.scores{display:grid;grid-template-columns:1fr 1fr;gap:8px}.blue{border-top:4px solid #1558a1}.red{border-top:4px solid #ab382c}.row{display:flex;gap:6px;align-items:center;flex-wrap:wrap}button,select{font:inherit;background:#fff;border:1px solid #9ca9a0;border-radius:5px;padding:5px 9px;cursor:pointer}#play{background:#20443c;color:white}input{width:100%;accent-color:#225c4f}#trend{width:100%;height:70px}#ev{min-height:45px;font-size:14px;white-space:pre-line}#legend{font-size:14px;line-height:1.8}.actions{margin-top:10px}#time{margin-left:auto;font-variant-numeric:tabular-nums}@media(max-width:700px){main{padding:12px}article{grid-template-columns:1fr}}
+</style>
+<main><header><h1>掩模对抗 · 单局回放</h1><span id="seed"></span></header><article><div>
+<canvas id="map" width="820" height="820" aria-label="41 × 41 棋盘"></canvas>
+<section class="actions"><div class="row"><button id="prev" aria-label="前一回合">◀</button><button id="play">播放</button><button id="next" aria-label="后一回合">▶</button>
+<select id="rate" aria-label="每秒播放回合数"><option value="4">4 回合/秒</option><option value="12" selected>12 回合/秒</option><option value="30">30 回合/秒</option></select><b id="time"></b></div>
+<input type="range" id="seek" min="0" value="0" aria-label="跳转回合"></section></div>
+<aside><div class="scores"><section class="blue"><h2 id="a"></h2><b class="big" id="sa"></b><small id="da"></small></section>
+<section class="red"><h2 id="b"></h2><b class="big" id="sb"></b><small id="db"></small></section></div>
+<section><h2>双方得分</h2><canvas id="trend" width="420" height="80" aria-label="双方得分曲线"></canvas></section>
+<section><h2>本回合</h2><div id="ev"></div><button id="event">跳至下个事件</button></section>
+<section id="legend"><h2>棋盘图例</h2>浅蓝 / 浅红 · 领地　 深色圆点 · 轮廓<br>三角 · 束斑和朝向　 方框 · 出生点<br>金色菱形 · 高分格　 深灰块 · 缺陷<br>紫色角标 · 加速格　 紫色环 · 标记点</section>
+<section><h2>终局判定</h2><div id="result"></div></section></aside></article></main>
+<script type="application/json" id="data">__MATCH_DATA__</script>
+<script>
+"use strict";
+const $=id=>document.getElementById(id), {board:B,frames:F,result:R,seed}=JSON.parse($("data").textContent);
+const map=$("map").getContext("2d"), palette=["#1558a1","#ab382c"], names=R.names;
+let index=0,timer=null;
+const sets={}; for(const k of ["high","defects","fast","marks","spawns"])sets[k]=new Set(B[k]);
+const bits=Array.from({length:1681},(_,p)=>1n<<BigInt(p));
+$("seed").textContent="地图种子 "+seed+" · 41 × 41";
+$("seek").max=F.length-1; $("a").textContent="蓝 · "+names[0]; $("b").textContent="红 · "+names[1];
+$("result").textContent=(R.winner==null?(R.kind==="double_loss"?"双败":"待裁定"):names[R.winner]+" 获胜")+"　"+R.score.join(" ∶ ")+"　"+({normal:"正常结束",technical:"技术判负",double_loss:"双败"})[R.kind]+"　累计错误 "+R.errors.join(" / ");
+const tr=$("trend").getContext("2d"),min=Math.min(0,...F.flatMap(f=>f.score)),max=Math.max(min+1,...F.flatMap(f=>f.score));
+function draw(idx){
+ index=Math.max(0,Math.min(F.length-1,idx)); const f=F[index];$("seek").value=index;
+ $("time").textContent="第 "+f.turn+" / "+R.turns+" 回合";
+ const own=f.own.map(BigInt),line=f.trail.map(BigInt);
+ for(let p=0;p<1681;p++){
+  const x=(p%41)*20,y=Math.floor(p/41)*20,k=bits[p];
+  map.fillStyle=sets.defects.has(p)?"#49534f":(own[0]&k)?"#b6d9f0":(own[1]&k)?"#f1c6bd":"#f6f7ef";map.fillRect(x,y,20,20);
+  map.strokeStyle="#25352b18";map.lineWidth=.7;map.strokeRect(x,y,20,20);
+  if(sets.fast.has(p)){map.fillStyle="#8c54a4";map.fillRect(x+2,y+2,6,2);map.fillRect(x+2,y+2,2,6);}
+  if(sets.marks.has(p)){map.strokeStyle="#8c54a4";map.beginPath();map.arc(x+10,y+10,8,0,Math.PI*2);map.stroke();}
+  if(sets.high.has(p)){map.fillStyle="#b78513";map.beginPath();map.moveTo(x+10,y+4);map.lineTo(x+16,y+10);map.lineTo(x+10,y+16);map.lineTo(x+4,y+10);map.fill();}
+  if(sets.spawns.has(p)){map.strokeStyle="#22382e";map.strokeRect(x+3,y+3,14,14);}
+  for(let i=0;i<2;i++)if(line[i]&k){map.fillStyle=palette[i];map.beginPath();map.arc(x+10,y+10,4,0,Math.PI*2);map.fill();}
+ }
+ for(let i=0;i<2;i++){
+  const p=f.p[i];if(p>=0){map.save();map.translate(p%41*20+10,Math.floor(p/41)*20+10);if(f.p[0]===f.p[1])map.translate(i?3:-3,0);
+   map.rotate(f.d[i]*Math.PI/2);map.beginPath();map.moveTo(0,-9);map.lineTo(8,7);map.lineTo(-8,7);map.closePath();map.fillStyle=palette[i];map.fill();map.strokeStyle="white";map.lineWidth=2;map.stroke();map.restore();}
+  $(i?"sb":"sa").textContent=f.score[i];$(i?"db":"da").textContent="领先 "+f.leads[i]+" 回合 · "+(f.down[i]?"停机剩 "+f.down[i]+" 回合":"在场");
+ }
+ const labels={close:"闭合，获得",scrap:"报废",restart:"重启"}, reasons={trail:"踩线",wall:"缺陷或出界",collision:"碰撞",restart:"出生点扫线"};
+ const lines=f.ev.map(([sub,type,i,detail])=>(sub===3?"回合末":"移动步 "+sub)+" · "+names[i]+" "+labels[type]+(type==="close"?" "+detail+" 格":type==="scrap"?"（"+reasons[detail]+"）":""));
+ $("ev").textContent=(index?"指令 "+f.cmd.map(c=>c||"无效").join(" / ")+"　累计错误 "+f.err.join(" / "):"初始局面")+"\n"+lines.join("\n");
+ tr.clearRect(0,0,420,80);const xx=t=>t*419/Math.max(F.length-1,1),yy=v=>75-70*(v-min)/(max-min);
+ for(let i=0;i<2;i++){tr.beginPath();F.forEach((fr,t)=>t?tr.lineTo(xx(t),yy(fr.score[i])):tr.moveTo(0,yy(fr.score[i])));tr.strokeStyle=palette[i];tr.lineWidth=2;tr.stroke();}
+ tr.fillStyle="#343d37";tr.fillRect(xx(index),0,1,80);
+}
+function stop(){clearInterval(timer);timer=null;$("play").textContent="播放";}
+function start(){if(index===F.length-1)draw(0);$("play").textContent="暂停";timer=setInterval(()=>{draw(index+1);if(index===F.length-1)stop();},1000/+$("rate").value);}
+$("play").onclick=()=>timer?stop():start();$("prev").onclick=()=>{stop();draw(index-1)};$("next").onclick=()=>{stop();draw(index+1)};
+$("seek").oninput=e=>{stop();draw(+e.target.value)};$("rate").onchange=()=>{if(timer){stop();start()}};
+$("event").onclick=()=>{stop();let t=index+1;while(t<F.length-1&&!F[t].ev.length)t++;draw(t)};
+draw(0);
+</script></html>
